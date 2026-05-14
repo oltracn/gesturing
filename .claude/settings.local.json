@@ -39,7 +39,9 @@
       "PowerShell(Get-ChildItem src/Gesturing/bin/Release/net8.0-windows/win-x64/publish -Recurse | Select-Object Name, @{N='Size\\(MB\\)';E={[math]::Round\\($_.Length/1MB,1\\)}})",
       "Bash(dir \"src/Gesturing/bin/Release/net8.0-windows/win-x64\")",
       "Bash(findstr Gesturing.exe)",
-      "Bash(dotnet publish *)"
+      "Bash(dotnet publish *)",
+      "Bash(dotnet build *)",
+      "PowerShell(Get-Process *)"
     ]
   }
 }

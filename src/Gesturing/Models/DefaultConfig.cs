@@ -42,6 +42,15 @@ public static class DefaultConfig
                         Modifiers = new List<string> { "Ctrl" },
                         Key = "W"
                     }
+                },
+                new()
+                {
+                    GestureSequence = new List<string> { "D", "L" },
+                    Hotkey = new HotkeyDef
+                    {
+                        Modifiers = new List<string> { "Ctrl", "Shift" },
+                        Key = "T"
+                    }
                 }
             }
         };

@@ -17,7 +17,12 @@ try:
     import evdev
 except ImportError:
     print("[Error] 缺少 'evdev' 库，无法运行。")
-    print("        请运行: sudo pacman -S python-evdev")
+    if os.path.exists("/usr/bin/dnf"):
+        print("        请运行: sudo dnf install python3-evdev")
+    elif os.path.exists("/usr/bin/pacman"):
+        print("        请运行: sudo pacman -S python-evdev")
+    else:
+        print("        请运行: pip install evdev")
     sys.exit(1)
 
 # 尝试加载 pystray 和 PIL 库以支持系统托盘，失败时回退到纯命令行模式
@@ -200,6 +205,137 @@ class ActiveWindowTracker:
         self.reader_thread = None
         self.journal_proc = None
         self.watchdog_thread = None
+        
+        self.backend = "none"
+        self.supported = False
+        self.detect_backend()
+
+    def detect_backend(self):
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+        wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+        
+        is_wayland = (session_type == "wayland") or bool(wayland_display)
+        
+        # 1. 检测 Wayland 模式
+        if is_wayland:
+            # 检测 KDE Wayland
+            if "kde" in desktop:
+                self.backend = "kde_wayland"
+                self.supported = True
+                print("[Info] ActiveWindowTracker: Detected KDE Wayland, using KWin Script backend.")
+                return
+
+            # 检测 GNOME Wayland
+            if "gnome" in desktop:
+                self.backend = "gnome_wayland"
+                # 测试 FocusedWindow D-Bus 扩展是否存在
+                if self.check_gnome_extension():
+                    self.supported = True
+                    print("[Info] ActiveWindowTracker: Detected GNOME Wayland, using Focused Window D-Bus extension backend.")
+                else:
+                    self.supported = False
+                    print("[Warning] ActiveWindowTracker: Detected GNOME Wayland, but 'Focused Window D-Bus' extension is not installed or enabled.")
+                    print("          To restrict gestures to specific target apps, please install: https://extensions.gnome.org/extension/5592/focused-window-d-bus/")
+                    print("          Gesturing will run in GLOBAL mode (apply to all windows) as a fallback.")
+                return
+
+        # 2. 检测 X11 模式
+        if session_type == "x11" or os.environ.get("DISPLAY"):
+            if shutil.which("xprop"):
+                self.backend = "x11"
+                self.supported = True
+                print("[Info] ActiveWindowTracker: Detected X11 environment, using xprop backend.")
+                return
+
+        # 3. 兜底检测（如果上面环境变量不完整）
+        # 尝试检测 KDE 相关的 dbus 接口是否存在
+        try:
+            res = subprocess.run([
+                "busctl", "--user", "status", "org.kde.KWin"
+            ], capture_output=True, timeout=0.5)
+            if res.returncode == 0:
+                self.backend = "kde_wayland"
+                self.supported = True
+                print("[Info] ActiveWindowTracker: Detected KWin DBus service, using KWin Script backend.")
+                return
+        except Exception:
+            pass
+
+        # 尝试检测 GNOME extension
+        if self.check_gnome_extension():
+            self.backend = "gnome_wayland"
+            self.supported = True
+            print("[Info] ActiveWindowTracker: Detected Focused Window D-Bus extension, using it.")
+            return
+
+        # 都没有检测到，则不支持窗口过滤，退化为全局生效
+        self.backend = "none"
+        self.supported = False
+        print("[Warning] ActiveWindowTracker: No active window tracking backend is available.")
+        print("          Gesturing will run in GLOBAL mode (apply to all windows) as a fallback.")
+
+    def check_gnome_extension(self):
+        try:
+            res = subprocess.run([
+                "gdbus", "call", "--session",
+                "--dest", "org.gnome.Shell",
+                "--object-path", "/org/gnome/shell/extensions/FocusedWindow",
+                "--method", "org.gnome.shell.extensions.FocusedWindow.Get"
+            ], capture_output=True, text=True, timeout=0.5)
+            return res.returncode == 0
+        except Exception:
+            return False
+
+    def get_active_window_gnome(self):
+        try:
+            res = subprocess.run([
+                "gdbus", "call", "--session",
+                "--dest", "org.gnome.Shell",
+                "--object-path", "/org/gnome/shell/extensions/FocusedWindow",
+                "--method", "org.gnome.shell.extensions.FocusedWindow.Get"
+            ], capture_output=True, text=True, timeout=0.2)
+            if res.returncode == 0:
+                out = res.stdout.strip()
+                # 典型的输出格式为: (true, '{"wm_class": "firefox", ...}') 或 ('{"wm_class": "firefox"}',)
+                start = out.find('{')
+                end = out.rfind('}')
+                if start != -1 and end != -1:
+                    data = json.loads(out[start:end+1])
+                    val = data.get("wm_class") or data.get("wm_class_instance")
+                    if val:
+                        return val
+        except Exception:
+            pass
+        return None
+
+    def get_active_window_x11(self):
+        try:
+            res = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True, text=True, timeout=0.2)
+            if res.returncode == 0:
+                m = re.search(r"_NET_ACTIVE_WINDOW\(WINDOW\):\s*window\s*id\s*#\s*(0x[0-9a-fA-F]+)", res.stdout)
+                if m:
+                    win_id = m.group(1)
+                    res2 = subprocess.run(["xprop", "-id", win_id, "WM_CLASS"], capture_output=True, text=True, timeout=0.2)
+                    if res2.returncode == 0:
+                        m2 = re.findall(r'"([^"]+)"', res2.stdout)
+                        if m2:
+                            return m2[-1]
+        except Exception:
+            pass
+        return None
+
+    def get_active_class(self):
+        if self.backend == "kde_wayland":
+            return self.active_class
+        elif self.backend == "gnome_wayland":
+            return self.get_active_window_gnome()
+        elif self.backend == "x11":
+            return self.get_active_window_x11()
+        return None
+
+    def is_supported(self):
+        return self.supported
 
     def write_script_file(self):
         script_content = """
@@ -220,7 +356,7 @@ class ActiveWindowTracker:
             return False
 
     def reload_script(self):
-        if not self.running:
+        if self.backend != "kde_wayland" or not self.running:
             return
         print("[Info] KWin script missing or KWin restarted. Reloading KWin script...")
         
@@ -283,6 +419,9 @@ class ActiveWindowTracker:
                 self.reload_script()
 
     def start(self):
+        if self.backend != "kde_wayland":
+            return
+            
         self.write_script_file()
 
         try:
@@ -304,15 +443,18 @@ class ActiveWindowTracker:
                     ], timeout=1.0, capture_output=True)
             else:
                 print(f"[Warning] Failed to load KWin active window script: {res.stderr.strip()}")
+                self.supported = False
         except Exception as e:
             print(f"[Warning] Exception loading KWin script: {e}")
+            self.supported = False
 
-        self.running = True
-        self.reader_thread = threading.Thread(target=self.journal_reader, daemon=True)
-        self.reader_thread.start()
-        
-        self.watchdog_thread = threading.Thread(target=self.watchdog_loop, daemon=True)
-        self.watchdog_thread.start()
+        if self.supported:
+            self.running = True
+            self.reader_thread = threading.Thread(target=self.journal_reader, daemon=True)
+            self.reader_thread.start()
+            
+            self.watchdog_thread = threading.Thread(target=self.watchdog_loop, daemon=True)
+            self.watchdog_thread.start()
 
     def journal_reader(self):
         try:
@@ -497,6 +639,19 @@ class GesturingDaemon:
         register_desktop_entry()
         
         self.tracker.start()
+        
+        if not self.tracker.is_supported():
+            desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+            if "gnome" in desktop:
+                show_notification(
+                    "Gesturing 运行提示", 
+                    "未检测到 Focused Window D-Bus 扩展，手势将全局生效。您可以安装该扩展以支持应用过滤。"
+                )
+            else:
+                show_notification(
+                    "Gesturing 运行提示", 
+                    "未检测到活动窗口跟踪器，手势将全局生效。"
+                )
 
         self.devices = self.find_mouse_devices()
         if not self.devices:
@@ -669,8 +824,15 @@ class GesturingDaemon:
                 if event.value == 1: # Down
                     self.in_gesture = False
                     if self.is_enabled:
-                        active_win = self.tracker.active_class
-                        if active_win and active_win.lower() in self.target_processes:
+                        active_win = self.tracker.get_active_class()
+                        is_target = False
+                        if self.tracker.is_supported():
+                            if active_win and active_win.lower() in self.target_processes:
+                                is_target = True
+                        else:
+                            is_target = True
+                            
+                        if is_target:
                             self.in_gesture = True
                             forward = False
 
@@ -905,7 +1067,7 @@ def main():
     ipc_thread = threading.Thread(target=ipc_server_loop, args=(socket_path, daemon), daemon=True)
     ipc_thread.start()
 
-    show_notification("Gesturing", "鼠标手势服务已启动")
+    # show_notification("Gesturing", "鼠标手势服务已启动")
     print("[Info] Gesturing daemon started successfully. Press Ctrl+C to exit.")
 
     if HAS_TRAY:
@@ -914,7 +1076,12 @@ def main():
         icon.run() # 阻塞主线程直到托盘退出
     else:
         print("[Warning] pystray 或 Pillow 库未安装，运行在纯命令行模式。")
-        print("          请运行: sudo pacman -S python-pystray python-pillow 安装托盘库。")
+        if os.path.exists("/usr/bin/dnf"):
+            print("          请运行: sudo dnf install python3-pystray python3-pillow 安装托盘库。")
+        elif os.path.exists("/usr/bin/pacman"):
+            print("          请运行: sudo pacman -S python-pystray python-pillow 安装托盘库。")
+        else:
+            print("          请运行: pip install pystray Pillow")
         try:
             while daemon.running:
                 time.sleep(0.5)

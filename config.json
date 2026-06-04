@@ -1,0 +1,42 @@
+{
+  "auto_start": false,
+  "is_enabled": true,
+  "target_processes": [
+    "chrome",
+    "firefox",
+    "msedge",
+    "google-chrome",
+    "konsole",
+    "ghostty"
+  ],
+  "rules": [
+    {
+      "gesture_sequence": ["L"],
+      "hotkey": {
+        "modifiers": [],
+        "key": "BrowserBack"
+      }
+    },
+    {
+      "gesture_sequence": ["R"],
+      "hotkey": {
+        "modifiers": [],
+        "key": "BrowserForward"
+      }
+    },
+    {
+      "gesture_sequence": ["D", "R"],
+      "hotkey": {
+        "modifiers": ["Ctrl"],
+        "key": "W"
+      }
+    },
+    {
+      "gesture_sequence": ["D", "L"],
+      "hotkey": {
+        "modifiers": ["Ctrl", "Shift"],
+        "key": "T"
+      }
+    }
+  ]
+}

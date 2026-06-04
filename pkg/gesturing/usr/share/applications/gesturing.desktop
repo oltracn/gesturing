@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gesturing
+Comment=Gesturing Mouse Gestures Daemon
+Exec=/usr/bin/gesturing
+Icon=/usr/share/gesturing/app.png
+Terminal=false
+Categories=Utility;
